@@ -1,0 +1,7 @@
+**/__pycache__/**
+
+log_folder/
+
+*.data
+*.info
+!dataset/bank-marketing.*

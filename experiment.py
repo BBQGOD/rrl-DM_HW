@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from torch.utils.tensorboard import SummaryWriter
 import torch.multiprocessing as mp
 import torch.distributed as dist
-from sklearn.model_selection import KFold, train_test_split
+from sklearn.model_selection import KFold
 from collections import defaultdict
 
 from rrl.utils import read_csv, DBEncoder
@@ -50,7 +50,6 @@ def get_data_loader(dataset, world_size, rank, batch_size, k=0, pin_memory=False
     test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, pin_memory=pin_memory)
 
     return db_enc, train_loader, valid_loader, test_loader
-
 
 def train_model(gpu, args):
     rank = args.nr * args.gpus + gpu
@@ -101,7 +100,6 @@ def train_model(gpu, args):
         weight_decay=args.weight_decay,
         log_iter=args.log_iter)
 
-
 def load_model(path, device_id, log_file=None, distributed=True):
     checkpoint = torch.load(path, map_location='cpu')
     saved_args = checkpoint['rrl_args']
@@ -125,7 +123,6 @@ def load_model(path, device_id, log_file=None, distributed=True):
     rrl.net.load_state_dict(checkpoint['model_state_dict'])
     return rrl
 
-
 def test_model(args):
     rrl = load_model(args.model, args.device_ids[0], log_file=args.test_res, distributed=False)
     dataset = args.data_set
@@ -136,7 +133,7 @@ def test_model(args):
             rule2weights = rrl.rule_print(db_enc.X_fname, db_enc.y_fname, train_loader, file=rrl_file, mean=db_enc.mean, std=db_enc.std)
     else:
         rule2weights = rrl.rule_print(db_enc.X_fname, db_enc.y_fname, train_loader, mean=db_enc.mean, std=db_enc.std, display=False)
-    
+
     metric = 'Log(#Edges)'
     edge_cnt = 0
     connected_rid = defaultdict(lambda: set())
@@ -159,13 +156,10 @@ def test_model(args):
                 connected_rid[ln - abs(rid[0])].add(rid[1])
     logging.info('\n\t{} of RRL  Model: {}'.format(metric, np.log(edge_cnt)))
 
-
-
 def train_main(args):
     os.environ['MASTER_ADDR'] = args.master_address
     os.environ['MASTER_PORT'] = args.master_port
     mp.spawn(train_model, nprocs=args.gpus, args=(args,))
-
 
 if __name__ == '__main__':
     from args import rrl_args
