@@ -15,10 +15,16 @@ def downsample_data(input_file, output_file, sample_ratio):
 
 if __name__ == '__main__':
     # 输入文件、输出文件以及保留比例
-    input_file = 'rrl-DM_HW/dataset/bank-marketing.data'
-    output_file = 'rrl-DM_HW/dataset/bank-marketing.downsample.data'
-    sample_ratio = 0.05
+    input_file = 'rrl-DM_HW/dataset/bank-marketing-wo-scaled.data'
+    output_file = 'rrl-DM_HW/dataset/bank-marketing-wo-scaled.downsample.data'
+    sample_ratio = 0.01
 
-    shutil.copy('rrl-DM_HW/dataset/bank-marketing.info', 'rrl-DM_HW/dataset/bank-marketing.downsample.info')
+    shutil.copy('rrl-DM_HW/dataset/bank-marketing-wo-scaled.info', 'rrl-DM_HW/dataset/bank-marketing-wo-scaled.downsample.info')
 
+    downsample_data(input_file, output_file, sample_ratio)
+
+    input_file = 'rrl-DM_HW/dataset/bank-marketing-wo-scaled.data'
+    output_file = 'rrl-DM_HW/dataset/bank-marketing-wo-scaled.manual.data'
+    sample_ratio = 0.0002
+    
     downsample_data(input_file, output_file, sample_ratio)
