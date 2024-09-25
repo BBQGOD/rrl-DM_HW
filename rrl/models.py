@@ -13,7 +13,7 @@ TEST_CNT_MOD = 500
 
 
 class Net(nn.Module):
-    def __init__(self, dim_list, use_not=False, left=None, right=None, use_nlaf=False, estimated_grad=False, use_skip=True, alpha=0.999, beta=8, gamma=1, temperature=0.01):
+    def __init__(self, dim_list, use_not=False, left=None, right=None, use_nlaf=False, estimated_grad=False, use_skip=True, alpha=0.999, beta=8, gamma=1, temperature=0.01, regres=False):
         super(Net, self).__init__()
 
         self.dim_list = dim_list
@@ -93,7 +93,7 @@ class MyDistributedDataParallel(torch.nn.parallel.DistributedDataParallel):
 class RRL:
     def __init__(self, dim_list, device_id, use_not=False, is_rank0=False, log_file=None, writer=None, left=None,
                  right=None, save_best=False, estimated_grad=False, save_path=None, distributed=True, use_skip=False, 
-                 use_nlaf=False, alpha=0.999, beta=8, gamma=1, temperature=0.01):
+                 use_nlaf=False, alpha=0.999, beta=8, gamma=1, temperature=0.01, regres=False):
         super(RRL, self).__init__()
         self.dim_list = dim_list
         self.use_not = use_not
@@ -102,6 +102,7 @@ class RRL:
         self.alpha =alpha
         self.beta = beta
         self.gamma = gamma
+        self.regres = regres
         self.best_f1 = -1.
         self.best_loss = 1e20
 
@@ -121,7 +122,7 @@ class RRL:
                 logging.basicConfig(level=logging.DEBUG, filename=log_file, filemode='w', format=log_format)
         self.writer = writer
 
-        self.net = Net(dim_list, use_not=use_not, left=left, right=right, use_nlaf=use_nlaf, estimated_grad=estimated_grad, use_skip=use_skip, alpha=alpha, beta=beta, gamma=gamma, temperature=temperature)
+        self.net = Net(dim_list, use_not=use_not, left=left, right=right, use_nlaf=use_nlaf, estimated_grad=estimated_grad, use_skip=use_skip, alpha=alpha, beta=beta, gamma=gamma, temperature=temperature, regres=regres)
         self.net.cuda(self.device_id)
         if distributed:
             self.net = MyDistributedDataParallel(self.net, device_ids=[self.device_id])
@@ -173,7 +174,10 @@ class RRL:
         accuracy_b = []
         f1_score_b = []
 
-        criterion = nn.CrossEntropyLoss().cuda(self.device_id)
+        if not self.regres:
+            criterion = nn.CrossEntropyLoss().cuda(self.device_id)
+        else:
+            criterion = nn.HuberLoss().cuda(self.device_id)
         optimizer = torch.optim.Adam(self.net.parameters(), lr=lr, weight_decay=0.0)
 
         cnt = -1
@@ -195,8 +199,12 @@ class RRL:
                 optimizer.zero_grad()  # Zero the gradient buffers.
                 
                 # trainable softmax temperature
-                y_bar = self.net.forward(X) / torch.exp(self.net.t)
-                y_arg = torch.argmax(y, dim=1)
+                if not self.regres:
+                    y_bar = self.net.forward(X) / torch.exp(self.net.t)
+                    y_arg = torch.argmax(y, dim=1)
+                else:
+                    y_bar = self.net.forward(X)
+                    y_arg = y
                 
                 loss_rrl = criterion(y_bar, y_arg) + weight_decay * self.l2_penalty()
                 
@@ -255,42 +263,54 @@ class RRL:
             raise Exception("Data loader is unavailable!")
         
         y_list = []
-        for X, y in test_loader:
-            y_list.append(y)
-        y_true = torch.cat(y_list, dim=0)
-        y_true = y_true.cpu().numpy().astype(np.int)
-        y_true = np.argmax(y_true, axis=1)
-        data_num = y_true.shape[0]
-
-        slice_step = data_num // 40 if data_num >= 40 else 1
-        logging.debug('y_true: {} {}'.format(y_true.shape, y_true[:: slice_step]))
-
         y_pred_b_list = []
+
         for X, y in test_loader:
             X = X.cuda(self.device_id, non_blocking=True)
             output = self.net.forward(X)
             y_pred_b_list.append(output)
+            y_list.append(y)
 
+        y_true = torch.cat(y_list, dim=0)
+        y_true = y_true.cpu().numpy()
         y_pred_b = torch.cat(y_pred_b_list).cpu().numpy()
-        y_pred_b_arg = np.argmax(y_pred_b, axis=1)
-        logging.debug('y_rrl_: {} {}'.format(y_pred_b_arg.shape, y_pred_b_arg[:: slice_step]))
-        logging.debug('y_rrl: {} {}'.format(y_pred_b.shape, y_pred_b[:: (slice_step)]))
+        
+        if not self.regres:
+            y_true = np.argmax(y_true.astype(np.int), axis=1)
+            data_num = y_true.shape[0]
 
-        accuracy_b = metrics.accuracy_score(y_true, y_pred_b_arg)
-        f1_score_b = metrics.f1_score(y_true, y_pred_b_arg, average='macro')
+            slice_step = data_num // 40 if data_num >= 40 else 1
+            logging.debug('y_true: {} {}'.format(y_true.shape, y_true[:: slice_step]))
+            
+            y_pred_b_arg = np.argmax(y_pred_b, axis=1)
+            logging.debug('y_rrl_: {} {}'.format(y_pred_b_arg.shape, y_pred_b_arg[:: slice_step]))
+            logging.debug('y_rrl: {} {}'.format(y_pred_b.shape, y_pred_b[:: (slice_step)]))
 
-        logging.info('-' * 60)
-        logging.info('On {} Set:\n\tAccuracy of RRL  Model: {}'
-                        '\n\tF1 Score of RRL  Model: {}'.format(set_name, accuracy_b, f1_score_b))
-        logging.info('On {} Set:\nPerformance of  RRL Model: \n{}\n{}'.format(
-            set_name, metrics.confusion_matrix(y_true, y_pred_b_arg), metrics.classification_report(y_true, y_pred_b_arg)))
-        logging.info('-' * 60)
+            accuracy_b = metrics.accuracy_score(y_true, y_pred_b_arg)
+            f1_score_b = metrics.f1_score(y_true, y_pred_b_arg, average='macro')
 
-        return accuracy_b, f1_score_b
+            logging.info('-' * 60)
+            logging.info('On {} Set:\n\tAccuracy of RRL  Model: {}'
+                            '\n\tF1 Score of RRL  Model: {}'.format(set_name, accuracy_b, f1_score_b))
+            logging.info('On {} Set:\nPerformance of  RRL Model: \n{}\n{}'.format(
+                set_name, metrics.confusion_matrix(y_true, y_pred_b_arg), metrics.classification_report(y_true, y_pred_b_arg)))
+            logging.info('-' * 60)
+
+            return accuracy_b, f1_score_b
+
+        else:
+            # 回归任务
+            mse = metrics.mean_squared_error(y_true, y_pred_b, squared=False)
+
+            logging.info('-' * 60)
+            logging.info('On {} Set:\n\tMSE of RRL Model: {}\n\tMAE of RRL Model: {}'.format(set_name, mse, mae))
+            logging.info('-' * 60)
+
+            return mse
 
     def save_model(self):
         rrl_args = {'dim_list': self.dim_list, 'use_not': self.use_not, 'use_skip': self.use_skip, 'estimated_grad': self.estimated_grad, 
-                    'use_nlaf': self.use_nlaf, 'alpha': self.alpha, 'beta': self.beta, 'gamma': self.gamma}
+                    'use_nlaf': self.use_nlaf, 'alpha': self.alpha, 'beta': self.beta, 'gamma': self.gamma, 'regres': self.regres}
         torch.save({'model_state_dict': self.net.state_dict(), 'rrl_args': rrl_args}, self.save_path)
 
     def detect_dead_node(self, data_loader=None):

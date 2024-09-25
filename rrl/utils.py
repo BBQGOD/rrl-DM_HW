@@ -29,11 +29,13 @@ def read_csv(data_path, info_path, shuffle=False):
 class DBEncoder:
     """Encoder used for data discretization and binarization."""
 
-    def __init__(self, f_df, discrete=False, y_one_hot=True, drop='first'):
+    def __init__(self, f_df, discrete=False, y_one_hot=True, y_discrete=True, drop='first'):
         self.f_df = f_df
         self.discrete = discrete
         self.y_one_hot = y_one_hot
-        self.label_enc = preprocessing.OneHotEncoder(categories='auto') if y_one_hot else preprocessing.LabelEncoder()
+        self.y_discrete = y_discrete
+        if y_discrete:
+            self.label_enc = preprocessing.OneHotEncoder(categories='auto') if y_one_hot else preprocessing.LabelEncoder()
         self.feature_enc = preprocessing.OneHotEncoder(categories='auto', drop=drop)
         self.imp = SimpleImputer(missing_values=np.nan, strategy='mean')
         self.X_fname = None
@@ -55,8 +57,11 @@ class DBEncoder:
         X_df = X_df.reset_index(drop=True)
         y_df = y_df.reset_index(drop=True)
         discrete_data, continuous_data = self.split_data(X_df)
-        self.label_enc.fit(y_df)
-        self.y_fname = list(self.label_enc.get_feature_names_out(y_df.columns)) if self.y_one_hot else y_df.columns
+        if self.y_discrete:
+            self.label_enc.fit(y_df)
+            self.y_fname = list(self.label_enc.get_feature_names_out(y_df.columns)) if self.y_one_hot else y_df.columns
+        else:
+            self.y_fname = y_df.columns
 
         if not continuous_data.empty:
             # Use mean as missing value for continuous columns if do not discretize them.
@@ -79,9 +84,12 @@ class DBEncoder:
         y_df = y_df.reset_index(drop=True)
         discrete_data, continuous_data = self.split_data(X_df)
         # Encode string value to int index.
-        y = self.label_enc.transform(y_df.values.reshape(-1, 1))
-        if self.y_one_hot:
-            y = y.toarray()
+        if self.y_discrete:
+            y = self.label_enc.transform(y_df.values.reshape(-1, 1))
+            if self.y_one_hot:
+                y = y.toarray()
+        else:
+            y = y_df.values
 
         if not continuous_data.empty:
             # Use mean as missing value for continuous columns if we do not discretize them.

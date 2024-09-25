@@ -17,25 +17,35 @@ from rrl.models import RRL
 DATA_DIR = './dataset'
 
 
-def get_data_loader(dataset, world_size, rank, batch_size, k=0, pin_memory=False, save_best=True):
+def get_data_loader(dataset, world_size, rank, batch_size, k=0, pin_memory=False, save_best=True, y_discrete=True, testset=None):
     data_path = os.path.join(DATA_DIR, dataset + '.data')
     info_path = os.path.join(DATA_DIR, dataset + '.info')
     X_df, y_df, f_df, label_pos = read_csv(data_path, info_path, shuffle=True)
 
-    db_enc = DBEncoder(f_df, discrete=False)
+    db_enc = DBEncoder(f_df, discrete=False, y_discrete=y_discrete)
     db_enc.fit(X_df, y_df)
 
     X, y = db_enc.transform(X_df, y_df, normalized=True, keep_stat=True)
 
-    kf = KFold(n_splits=5, shuffle=True, random_state=0)
-    train_index, test_index = list(kf.split(X_df))[k]
-    X_train = X[train_index]
-    y_train = y[train_index]
-    X_test = X[test_index]
-    y_test = y[test_index]
+    if testset is None:
+        kf = KFold(n_splits=5, shuffle=True, random_state=0)
+        train_index, test_index = list(kf.split(X_df))[k]
+        X_train = X[train_index]
+        y_train = y[train_index]
+        X_test = X[test_index]
+        y_test = y[test_index]
 
-    train_set = TensorDataset(torch.tensor(X_train.astype(np.float32)), torch.tensor(y_train.astype(np.float32)))
-    test_set = TensorDataset(torch.tensor(X_test.astype(np.float32)), torch.tensor(y_test.astype(np.float32)))
+        train_set = TensorDataset(torch.tensor(X_train.astype(np.float32)), torch.tensor(y_train.astype(np.float32)))
+        test_set = TensorDataset(torch.tensor(X_test.astype(np.float32)), torch.tensor(y_test.astype(np.float32)))
+
+    else:
+        train_set = TensorDataset(torch.tensor(X.astype(np.float32)), torch.tensor(y.astype(np.float32)))
+
+        test_path = os.path.join(DATA_DIR, testset + '.data')
+        test_info_path = os.path.join(DATA_DIR, testset + '.info')
+        X_test, y_test, _, _ = read_csv(test_path, test_info_path, shuffle=False)
+        X_test, y_test = db_enc.transform(X_test, y_test, normalized=True)
+        test_set = TensorDataset(torch.tensor(X_test.astype(np.float32)), torch.tensor(y_test.astype(np.float32)))
 
     train_len = int(len(train_set) * 0.95)
     train_sub, valid_set = random_split(train_set, [train_len, len(train_set) - train_len])
@@ -45,7 +55,7 @@ def get_data_loader(dataset, world_size, rank, batch_size, k=0, pin_memory=False
 
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_set, num_replicas=world_size, rank=rank)
 
-    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=False, pin_memory=pin_memory, sampler=train_sampler)
+    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=(testset is not None), pin_memory=pin_memory, sampler=train_sampler)
     valid_loader = DataLoader(valid_set, batch_size=batch_size, shuffle=False, pin_memory=pin_memory)
     test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, pin_memory=pin_memory)
 
@@ -67,7 +77,9 @@ def train_model(gpu, args):
 
     dataset = args.data_set
     db_enc, train_loader, valid_loader, _ = get_data_loader(dataset, args.world_size, rank, args.batch_size,
-                                                            k=args.ith_kfold, pin_memory=True, save_best=args.save_best)
+                                                            k=args.ith_kfold, pin_memory=True, 
+                                                            save_best=args.save_best, y_discrete=(args.task in ['classification', 'classification-test']),
+                                                            testset=(args.test_set if args.task == 'classification-test' else None))
 
     X_fname = db_enc.X_fname
     y_fname = db_enc.y_fname
@@ -88,7 +100,8 @@ def train_model(gpu, args):
               alpha=args.alpha,
               beta=args.beta,
               gamma=args.gamma,
-              temperature=args.temp)
+              temperature=args.temp,
+              regres=(args.task == 'regression'))
 
     rrl.train_model(
         data_loader=train_loader,
@@ -115,7 +128,8 @@ def load_model(path, device_id, log_file=None, distributed=True):
         use_nlaf=saved_args['use_nlaf'],
         alpha=saved_args['alpha'],
         beta=saved_args['beta'],
-        gamma=saved_args['gamma'])
+        gamma=saved_args['gamma'],
+        regres=saved_args['regres'])
     stat_dict = checkpoint['model_state_dict']
     for key in list(stat_dict.keys()):
         # remove 'module.' prefix
@@ -126,7 +140,9 @@ def load_model(path, device_id, log_file=None, distributed=True):
 def test_model(args):
     rrl = load_model(args.model, args.device_ids[0], log_file=args.test_res, distributed=False)
     dataset = args.data_set
-    db_enc, train_loader, _, test_loader = get_data_loader(dataset, 4, 0, args.batch_size, args.ith_kfold, save_best=False)
+    db_enc, train_loader, _, test_loader = get_data_loader(dataset, 4, 0, args.batch_size, args.ith_kfold,
+                                                           save_best=False, y_discrete=(args.task in ['classification', 'classification-test']),
+                                                           testset=(args.test_set if args.task == 'classification-test' else None))
     rrl.test(test_loader=test_loader, set_name='Test')
     if args.print_rule:
         with open(args.rrl_file, 'w') as rrl_file:
