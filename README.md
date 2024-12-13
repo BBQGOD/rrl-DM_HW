@@ -1,4 +1,11 @@
 # Rule-based Representation Learner
+
+## **New Feature**
+
+The code is adapted to both classification and regression tasks. The regression task is supported by the new loss function, i.e., the Huber loss. It also supports predefined test sets. 
+
+*Original Readme*:
+
 ## Updates
 *The following updates have been summarized as a paper ([Learning Interpretable Rules for Scalable Data Representation and Classification](https://arxiv.org/abs/2310.14336)) and accepted by TPAMI.* :tada::tada::tada:
 

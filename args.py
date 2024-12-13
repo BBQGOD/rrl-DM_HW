@@ -49,14 +49,14 @@ parser.add_argument('-s', '--structure', type=str, default='5@64',
 
 rrl_args = parser.parse_args()
 rrl_args.folder_name = '{}_e{}_bs{}_lr{}_lrdr{}_lrde{}_wd{}_ki{}_rc{}_useNOT{}_saveBest{}_useNLAF{}_estimatedGrad{}_useSkip{}_alpha{}_beta{}_gamma{}_temp{}'.format(
-    rrl_args.data_set, rrl_args.epoch, rrl_args.batch_size, rrl_args.learning_rate, rrl_args.lr_decay_rate,
+    rrl_args.data_set[:-3] if rrl_args.data_set.endswith('={}') else rrl_args.data_set, rrl_args.epoch, rrl_args.batch_size, rrl_args.learning_rate, rrl_args.lr_decay_rate,
     rrl_args.lr_decay_epoch, rrl_args.weight_decay, rrl_args.ith_kfold, rrl_args.round_count, rrl_args.use_not,
     rrl_args.save_best, rrl_args.nlaf, rrl_args.estimated_grad, rrl_args.skip, rrl_args.alpha, rrl_args.beta, rrl_args.gamma, rrl_args.temp)
 
 if not os.path.exists('log_folder'):
     os.mkdir('log_folder')
 rrl_args.folder_name = rrl_args.folder_name + '_L' + rrl_args.structure
-rrl_args.set_folder_path = os.path.join('log_folder', rrl_args.data_set)
+rrl_args.set_folder_path = os.path.join('log_folder', rrl_args.data_set)[:-3] if os.path.join('log_folder', rrl_args.data_set).endswith('-{}') else os.path.join('log_folder', rrl_args.data_set)
 if not os.path.exists(rrl_args.set_folder_path):
     os.mkdir(rrl_args.set_folder_path)
 rrl_args.folder_path = os.path.join(rrl_args.set_folder_path, rrl_args.folder_name)

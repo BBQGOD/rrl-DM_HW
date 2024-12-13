@@ -93,7 +93,7 @@ class MyDistributedDataParallel(torch.nn.parallel.DistributedDataParallel):
 class RRL:
     def __init__(self, dim_list, device_id, use_not=False, is_rank0=False, log_file=None, writer=None, left=None,
                  right=None, save_best=False, estimated_grad=False, save_path=None, distributed=True, use_skip=False, 
-                 use_nlaf=False, alpha=0.999, beta=8, gamma=1, temperature=0.01):
+                 use_nlaf=False, alpha=0.999, beta=8, gamma=1, temperature=0.01, y_discrete=True):
         super(RRL, self).__init__()
         self.dim_list = dim_list
         self.use_not = use_not
@@ -102,8 +102,13 @@ class RRL:
         self.alpha =alpha
         self.beta = beta
         self.gamma = gamma
-        self.best_f1 = -1.
+        if y_discrete:
+            self.best_f1 = -1.
+        else:
+            self.best_rmse = 1e20
         self.best_loss = 1e20
+        
+        self.y_discrete = y_discrete
 
         self.device_id = device_id
         self.is_rank0 = is_rank0
@@ -170,10 +175,16 @@ class RRL:
         if data_loader is None:
             raise Exception("Data loader is unavailable!")
 
-        accuracy_b = []
-        f1_score_b = []
+        if self.y_discrete:
+            accuracy_b = []
+            f1_score_b = []
+        else:
+            root_mse_b = []
 
-        criterion = nn.CrossEntropyLoss().cuda(self.device_id)
+        if self.y_discrete:
+            criterion = nn.CrossEntropyLoss().cuda(self.device_id)
+        else:
+            criterion = nn.HuberLoss().cuda(self.device_id)
         optimizer = torch.optim.Adam(self.net.parameters(), lr=lr, weight_decay=0.0)
 
         cnt = -1
@@ -196,7 +207,10 @@ class RRL:
                 
                 # trainable softmax temperature
                 y_bar = self.net.forward(X) / torch.exp(self.net.t)
-                y_arg = torch.argmax(y, dim=1)
+                if self.y_discrete:
+                    y_arg = torch.argmax(y, dim=1)
+                else:
+                    y_arg = y
                 
                 loss_rrl = criterion(y_bar, y_arg) + weight_decay * self.l2_penalty()
                 
@@ -225,20 +239,36 @@ class RRL:
 
                 if self.is_rank0 and (cnt % (TEST_CNT_MOD * (1 if self.save_best else 10)) == 0):
                     if valid_loader is not None:
-                        acc_b, f1_b = self.test(test_loader=valid_loader, set_name='Validation')
+                        if self.y_discrete:
+                            acc_b, f1_b = self.test(test_loader=valid_loader, set_name='Validation')
+                        else:
+                            rmse_b = self.test(test_loader=valid_loader, set_name='Validation')
                     else: # use the data_loader as the valid loader
-                        acc_b, f1_b = self.test(test_loader=data_loader, set_name='Training')
+                        if self.y_discrete:
+                            acc_b, f1_b = self.test(test_loader=data_loader, set_name='Training')
+                        else:
+                            rmse_b = self.test(test_loader=data_loader, set_name='Training')
                     
-                    if self.save_best and (f1_b > self.best_f1 or (np.abs(f1_b - self.best_f1) < 1e-10 and self.best_loss > epoch_loss_rrl)):
-                        self.best_f1 = f1_b
-                        self.best_loss = epoch_loss_rrl
-                        self.save_model()
+                    if self.save_best:
+                        if self.y_discrete and (f1_b > self.best_f1 or (np.abs(f1_b - self.best_f1) < 1e-10 and self.best_loss > epoch_loss_rrl)):
+                            self.best_f1 = f1_b
+                            self.best_loss = epoch_loss_rrl
+                            self.save_model()
+                        elif not self.y_discrete and (rmse_b < self.best_rmse or (np.abs(rmse_b - self.best_rmse) < 1e-10 and self.best_loss > epoch_loss_rrl)):
+                            self.best_rmse = rmse_b
+                            self.best_loss = epoch_loss_rrl
+                            self.save_model()
                     
-                    accuracy_b.append(acc_b)
-                    f1_score_b.append(f1_b)
-                    if self.writer is not None:
-                        self.writer.add_scalar('Accuracy_RRL', acc_b, cnt // TEST_CNT_MOD)
-                        self.writer.add_scalar('F1_Score_RRL', f1_b, cnt // TEST_CNT_MOD)
+                    if self.y_discrete:
+                        accuracy_b.append(acc_b)
+                        f1_score_b.append(f1_b)
+                        if self.writer is not None:
+                            self.writer.add_scalar('Accuracy_RRL', acc_b, cnt // TEST_CNT_MOD)
+                            self.writer.add_scalar('F1_Score_RRL', f1_b, cnt // TEST_CNT_MOD)
+                    else:
+                        root_mse_b.append(rmse_b)
+                        if self.writer is not None:
+                            self.writer.add_scalar('RMSE_RRL', rmse_b, cnt // TEST_CNT_MOD)
             if self.is_rank0:
                 logging.info('epoch: {}, loss_rrl: {}'.format(epo, epoch_loss_rrl))
                 if self.writer is not None:
@@ -258,8 +288,11 @@ class RRL:
         for X, y in test_loader:
             y_list.append(y)
         y_true = torch.cat(y_list, dim=0)
-        y_true = y_true.cpu().numpy().astype(np.int)
-        y_true = np.argmax(y_true, axis=1)
+        if self.y_discrete:
+            y_true = y_true.cpu().numpy().astype(np.int)
+            y_true = np.argmax(y_true, axis=1)
+        else:
+            y_true = y_true.cpu().numpy().astype(np.float32)
         data_num = y_true.shape[0]
 
         slice_step = data_num // 40 if data_num >= 40 else 1
@@ -272,25 +305,40 @@ class RRL:
             y_pred_b_list.append(output)
 
         y_pred_b = torch.cat(y_pred_b_list).cpu().numpy()
-        y_pred_b_arg = np.argmax(y_pred_b, axis=1)
+        if self.y_discrete:
+            y_pred_b_arg = np.argmax(y_pred_b, axis=1)
+        else:
+            y_pred_b_arg = y_pred_b
         logging.debug('y_rrl_: {} {}'.format(y_pred_b_arg.shape, y_pred_b_arg[:: slice_step]))
         logging.debug('y_rrl: {} {}'.format(y_pred_b.shape, y_pred_b[:: (slice_step)]))
 
-        accuracy_b = metrics.accuracy_score(y_true, y_pred_b_arg)
-        f1_score_b = metrics.f1_score(y_true, y_pred_b_arg, average='macro')
+        if self.y_discrete:
+            accuracy_b = metrics.accuracy_score(y_true, y_pred_b_arg)
+            f1_score_b = metrics.f1_score(y_true, y_pred_b_arg, average='macro')
 
-        logging.info('-' * 60)
-        logging.info('On {} Set:\n\tAccuracy of RRL  Model: {}'
-                        '\n\tF1 Score of RRL  Model: {}'.format(set_name, accuracy_b, f1_score_b))
-        logging.info('On {} Set:\nPerformance of  RRL Model: \n{}\n{}'.format(
-            set_name, metrics.confusion_matrix(y_true, y_pred_b_arg), metrics.classification_report(y_true, y_pred_b_arg)))
-        logging.info('-' * 60)
+            logging.info('-' * 60)
+            logging.info('On {} Set:\n\tAccuracy of RRL  Model: {}'
+                            '\n\tF1 Score of RRL  Model: {}'.format(set_name, accuracy_b, f1_score_b))
+            logging.info('On {} Set:\nPerformance of  RRL Model: \n{}\n{}'.format(
+                set_name, metrics.confusion_matrix(y_true, y_pred_b_arg), metrics.classification_report(y_true, y_pred_b_arg)))
+            logging.info('-' * 60)
 
-        return accuracy_b, f1_score_b
+            return accuracy_b, f1_score_b
+        else:
+            rmse_b = metrics.mean_squared_error(y_true, y_pred_b_arg, squared=False)
+            
+            logging.info('-' * 60)
+            logging.info('On {} Set:\n\tRMSE of RRL  Model: {}'.format(set_name, rmse_b))
+            logging.info('On {} Set:\nPerformance of  RRL Model: \n{}'.format(
+                set_name, metrics.r2_score(y_true, y_pred_b_arg)))
+            logging.info('-' * 60)
+
+            return rmse_b
+
 
     def save_model(self):
         rrl_args = {'dim_list': self.dim_list, 'use_not': self.use_not, 'use_skip': self.use_skip, 'estimated_grad': self.estimated_grad, 
-                    'use_nlaf': self.use_nlaf, 'alpha': self.alpha, 'beta': self.beta, 'gamma': self.gamma}
+                    'use_nlaf': self.use_nlaf, 'alpha': self.alpha, 'beta': self.beta, 'gamma': self.gamma, 'y_discrete': self.y_discrete}
         torch.save({'model_state_dict': self.net.state_dict(), 'rrl_args': rrl_args}, self.save_path)
 
     def detect_dead_node(self, data_loader=None):

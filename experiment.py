@@ -17,12 +17,12 @@ from rrl.models import RRL
 DATA_DIR = './dataset'
 
 
-def get_data_loader(dataset, world_size, rank, batch_size, k=0, pin_memory=False, save_best=True):
+def get_folded_data_loader(dataset, world_size, rank, batch_size, k=0, pin_memory=False, save_best=True, y_discrete=True):
     data_path = os.path.join(DATA_DIR, dataset + '.data')
     info_path = os.path.join(DATA_DIR, dataset + '.info')
     X_df, y_df, f_df, label_pos = read_csv(data_path, info_path, shuffle=True)
 
-    db_enc = DBEncoder(f_df, discrete=False)
+    db_enc = DBEncoder(f_df, discrete=False, y_discrete=y_discrete)
     db_enc.fit(X_df, y_df)
 
     X, y = db_enc.transform(X_df, y_df, normalized=True, keep_stat=True)
@@ -51,6 +51,38 @@ def get_data_loader(dataset, world_size, rank, batch_size, k=0, pin_memory=False
 
     return db_enc, train_loader, valid_loader, test_loader
 
+def get_train_test_data_loader(dataset, world_size, rank, batch_size, pin_memory=False, save_best=True):
+    train_data_path = os.path.join(DATA_DIR, dataset.format('train') + '.data')
+    train_info_path = os.path.join(DATA_DIR, dataset.format('train') + '.info')
+    test_data_path = os.path.join(DATA_DIR, dataset.format('test') + '.data')
+    test_info_path = os.path.join(DATA_DIR, dataset.format('test') + '.info')
+    train_X_df, train_y_df, f_df, label_pos = read_csv(train_data_path, train_info_path, shuffle=True)
+    test_X_df, test_y_df, _, _ = read_csv(test_data_path, test_info_path)
+
+    db_enc = DBEncoder(f_df, discrete=False)
+    db_enc.fit(train_X_df, train_y_df)
+
+    X_train, y_train = db_enc.transform(train_X_df, train_y_df, normalized=True, keep_stat=True)
+    X_test, y_test = db_enc.transform(test_X_df, test_y_df, normalized=True)
+
+    train_set = TensorDataset(torch.tensor(X_train.astype(np.float32)), torch.tensor(y_train.astype(np.float32)))
+    test_set = TensorDataset(torch.tensor(X_test.astype(np.float32)), torch.tensor(y_test.astype(np.float32)))
+
+    train_len = int(len(train_set) * 0.95)
+    train_sub, valid_set = random_split(train_set, [train_len, len(train_set) - train_len])
+
+    if save_best:  # use validation set for model selections.
+        train_set = train_sub
+
+    train_sampler = torch.utils.data.distributed.DistributedSampler(train_set, num_replicas=world_size, rank=rank)
+
+    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=False, pin_memory=pin_memory, sampler=train_sampler)
+    valid_loader = DataLoader(valid_set, batch_size=batch_size, shuffle=False, pin_memory=pin_memory)
+    test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, pin_memory=pin_memory)
+
+    return db_enc, train_loader, valid_loader, test_loader
+
+
 def train_model(gpu, args):
     rank = args.nr * args.gpus + gpu
     dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=rank)
@@ -66,8 +98,17 @@ def train_model(gpu, args):
         is_rank0 = False
 
     dataset = args.data_set
-    db_enc, train_loader, valid_loader, _ = get_data_loader(dataset, args.world_size, rank, args.batch_size,
+    if args.task == 'classification':
+        db_enc, train_loader, valid_loader, _ = get_folded_data_loader(dataset, args.world_size, rank, args.batch_size,
                                                             k=args.ith_kfold, pin_memory=True, save_best=args.save_best)
+    elif args.task == 'classification-test':
+        db_enc, train_loader, valid_loader, _ = get_train_test_data_loader(dataset, args.world_size, rank, args.batch_size,
+                                                            pin_memory=True, save_best=args.save_best)
+    elif args.task == 'regression':
+        db_enc, train_loader, valid_loader, _ = get_folded_data_loader(dataset, args.world_size, rank, args.batch_size,
+                                                            k=args.ith_kfold, pin_memory=True, save_best=args.save_best, y_discrete=False)
+    else:
+        raise ValueError('task should be classification or classification-test')
 
     X_fname = db_enc.X_fname
     y_fname = db_enc.y_fname
@@ -88,7 +129,8 @@ def train_model(gpu, args):
               alpha=args.alpha,
               beta=args.beta,
               gamma=args.gamma,
-              temperature=args.temp)
+              temperature=args.temp,
+              y_discrete=False if args.task == 'regression' else True)
 
     rrl.train_model(
         data_loader=train_loader,
@@ -115,7 +157,8 @@ def load_model(path, device_id, log_file=None, distributed=True):
         use_nlaf=saved_args['use_nlaf'],
         alpha=saved_args['alpha'],
         beta=saved_args['beta'],
-        gamma=saved_args['gamma'])
+        gamma=saved_args['gamma'],
+        y_discrete=saved_args.get('y_discrete', True))
     stat_dict = checkpoint['model_state_dict']
     for key in list(stat_dict.keys()):
         # remove 'module.' prefix
@@ -126,7 +169,14 @@ def load_model(path, device_id, log_file=None, distributed=True):
 def test_model(args):
     rrl = load_model(args.model, args.device_ids[0], log_file=args.test_res, distributed=False)
     dataset = args.data_set
-    db_enc, train_loader, _, test_loader = get_data_loader(dataset, 4, 0, args.batch_size, args.ith_kfold, save_best=False)
+    if args.task == 'classification':
+        db_enc, train_loader, _, test_loader = get_folded_data_loader(dataset, 4, 0, args.batch_size, args.ith_kfold, save_best=False)
+    elif args.task == 'classification-test':
+        db_enc, train_loader, _, test_loader = get_train_test_data_loader(dataset, 4, 0, args.batch_size, save_best=False)
+    elif args.task == 'regression':
+        db_enc, train_loader, _, test_loader = get_folded_data_loader(dataset, 4, 0, args.batch_size, args.ith_kfold, save_best=False, y_discrete=False)
+    else:
+        raise ValueError('task should be classification or classification-test')
     rrl.test(test_loader=test_loader, set_name='Test')
     if args.print_rule:
         with open(args.rrl_file, 'w') as rrl_file:

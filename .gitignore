@@ -4,4 +4,5 @@ log_folder/
 
 *.data
 *.info
-!dataset/bank-marketing.*
+
+log.txt
