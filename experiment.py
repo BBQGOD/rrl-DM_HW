@@ -76,7 +76,7 @@ def get_train_test_data_loader(dataset, world_size, rank, batch_size, pin_memory
 
     train_sampler = torch.utils.data.distributed.DistributedSampler(train_set, num_replicas=world_size, rank=rank)
 
-    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=False, pin_memory=pin_memory, sampler=train_sampler)
+    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, pin_memory=pin_memory, sampler=train_sampler)
     valid_loader = DataLoader(valid_set, batch_size=batch_size, shuffle=False, pin_memory=pin_memory)
     test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, pin_memory=pin_memory)
 

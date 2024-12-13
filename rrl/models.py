@@ -299,6 +299,7 @@ class RRL:
         logging.debug('y_true: {} {}'.format(y_true.shape, y_true[:: slice_step]))
 
         y_pred_b_list = []
+
         for X, y in test_loader:
             X = X.cuda(self.device_id, non_blocking=True)
             output = self.net.forward(X)

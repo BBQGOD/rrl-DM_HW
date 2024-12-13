@@ -3,15 +3,9 @@
 cd rrl-DM_HW
 # trained on the bank-marketing data set with available GPUs.
 
-available_gpus=(2 1 0)
+available_gpus=(0 1 2)
 
 dataset=bank-marketing
-
-# 网格搜索超参数列表
-# learning_rates=(0.0002 0.001 0.005)          # 学习率
-# temperatures=(1.0 0.1 0.01)                 # 温度参数
-# structures=("1@16" "1@64" "1@1024" "1@64@32" "1@64@32@16")      # 结构
-# weight_decays=(0.0001 0.01 0.00001 0)          # 权重衰减
 
 # 网格搜索结构参数列表
 learning_rates=(0.001)
