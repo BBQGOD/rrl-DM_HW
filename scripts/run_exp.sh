@@ -71,7 +71,7 @@ dataset="breast-cancer-{}"
 # 网格搜索结构参数列表
 learning_rates=(0.001)
 temperatures=(1.0)
-structures=("4@32" "16@32" "32@16" "32@8" "32@4" "32@1")
+structures=("1@32" "4@32" "16@32" "32@16" "32@8" "32@4" "32@1")
 weight_decays=(0)
 
 current_job=0  # 当前实验计数器
