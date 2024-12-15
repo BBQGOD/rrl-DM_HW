@@ -6,3 +6,4 @@ log_folder/
 *.info
 
 log.txt
+log.*.txt
