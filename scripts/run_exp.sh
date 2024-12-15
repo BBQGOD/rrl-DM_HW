@@ -3,7 +3,7 @@
 cd rrl-DM_HW
 # trained on the bank-marketing data set with available GPUs.
 
-available_gpus=(0 1 2)
+available_gpus=(6)
 
 dataset=bank-marketing
 
@@ -141,7 +141,7 @@ do
         do
             for wd in "${weight_decays[@]}"
             do
-                for i in 0 #1 2 3 4
+                for i in 0 1 2 3 4
                 do
                     # 获取当前可用的 GPU
                     gpu_id=${available_gpus[$current_job%gpu_count]}
